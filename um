@@ -1,0 +1,157 @@
+#!/bin/bash
+# USB MOUNT 
+#umount /home/$HOME/mnt/usb1
+#umount /mnt/usb1
+if [[ -z $(command -v bindfs) ]]; then
+    echo "Missing dependency 'bindfs'"
+    exit 1
+fi
+if [[ -z $(command -v mkfs.fat) ]]; then
+    echo "Missing dependency 'bindfs'"
+    exit 1
+fi
+
+if [[ ! $(whoami) == root ]]; then
+    echo "Must be ran as root"
+    exit 0
+fi
+
+homedir=$(getent passwd $(logname) | cut -d: -f6)
+LOC=$homedir/mnt
+
+#GET UNOMUNTED DEVICES
+umounted=$(lsblk --noheadings --raw -o NAME,MOUNTPOINT | awk '$1~/[[:digit:]]/ && $2 == ""')
+unset LINE
+while read -r line; do
+    LINE=$(lsblk -fl | grep "$line" | xargs -I{} echo -e "$LINE\n{}\n" | awk '$2!=""' | grep -v "crypto_LUKS")
+done <<< "$umounted"
+LINE=$(echo "$LINE" | sort)
+
+#ADD NUMBERS OR EXIT
+i=0
+if [[ ! -z $LINE ]]; then
+    unset LINE2
+    while read -r line; do
+        ((i++))
+        LINE2=$(echo -e "$LINE2\n$i $line\n")
+    done <<< "$LINE"
+else
+    echo "Nothing mounted"
+    exit 0
+fi
+
+#PROMPT FOR WHICH DEVICE
+echo "TO MOUNT"
+echo "$LINE2" | column -t
+
+ceol=$(tput el)
+unset flag
+while true; do
+
+    if [[ -z flag ]]; then
+        read -p "Which device?: " num
+    else
+        read -p "${ceol}Which device?: " num
+    fi
+
+    if [[ ! -z flag ]] && [[ $num -gt i ]] || [[ $num -lt 1 ]]; then
+        tput cuu 2
+        echo -e "\r${ceol}Invalid Response                               "
+    elif [[ $num -gt i ]] || [[ $num -lt 1 ]]; then
+        tput cuu 1
+        echo -e "\r${ceol}Invalid Response                               "
+    else
+        break
+    fi
+
+    flag=1
+done
+dev=$(echo "$LINE2" | grep -e "^$num" | awk '{print $2}')
+echo ""
+
+#MOUNT AT ROOT
+#REMOVE EMPTY NON-MOUNTED DIRECTORIES
+for dir in /mnt/usb*; do
+    if [[ $dir == /mnt/usb16 ]]; then
+        continue
+    fi
+    if [[ ! -z $(mountpoint "$dir"| grep "not") ]]; then
+        DIRS=$(echo -e "$DIRS\n$dir\n")
+    fi
+done
+while read -r line; do
+    if [[ -z $line ]] && [[ ! -d $line ]]; then
+       continue
+    fi
+    rmdir --ignore-fail-on-non-empty "$line"
+done <<< "$DIRS"
+i=0
+while true; do
+    ((i++))
+    if [[ ! -d /mnt/usb$i ]]; then
+        DEST=usb$i
+        break
+    fi
+done
+if [[ ! -d /mnt/"$DEST" ]];then
+    mkdir /mnt/"$DEST"
+fi
+
+type=$(lsblk -fr | grep $dev |awk '{print $2}')
+if [[ $type == vfat ]]; then
+    uid=$(id -u $(logname))
+    gid=$(id -g $(logname))
+    mount -t vfat -o rw,iocharset=utf8,fmask=0000,dmask=0000,uid="$uid",gid="$gid" /dev/"$dev" /mnt/"$DEST"
+    #echo "mount -t vfat -o rw,iocharset=utf8,uid="$uid",gid="gid" /dev/"$dev" /mnt/"$DEST""
+    #mount -t vfat -o rw,iocharset=utf8,uid="$uid",gid="gid" /dev/"$dev" /mnt/"$DEST"
+    vflag=1
+else
+    mount /dev/$dev /mnt/"$DEST"
+    vflag=0
+fi
+
+#MOUNT LOCALLY
+#REMOVE EMPTY NON-MOUNTED DIRECTORIES
+unset DIRS
+for dir in $LOC/usb*; do
+    if [[ $dir == $LOC/usb16 ]]; then
+        continue
+    fi
+    if [[ ! -z $(mountpoint "$dir"| grep "not") ]]; then
+        DIRS=$(echo -e "$DIRS\n$dir\n")
+    fi
+done
+
+while read -r line; do
+    if [[ -z $line ]] && [[ ! -d $line ]]; then
+        continue
+    fi
+    if [[ ! -z $(file "$line" | grep "symbolic link") ]]; then
+        unlink "$line"
+    else
+        rmdir --ignore-fail-on-non-empty "$line"
+    fi
+done <<< "$DIRS"
+
+i=0
+while true; do
+    ((i++))
+    if [[ ! -d $LOC/usb$i ]]; then
+       dest=usb$i
+       break
+    fi
+done
+if [[ ! -d "$LOC"/"$dest" ]] && [[ $vflag == 0 ]];then
+    mkdir "$LOC"/"$dest"
+    chown -R $(logname) "$LOC"/"$dest"
+fi
+
+if [[ $vflag == 0 ]]; then
+    gid=$(id -g $(logname))
+    uid=$(id -u $(logname))
+    bindfs -o umask="022",gid="$gid",uid="$uid" /mnt/"$DEST" "$LOC"/"$dest"
+elif [[ $vflag == 1 ]]; then
+    ln -s /mnt/"$DEST" "$LOC"/"$dest"
+fi
+echo ""
+echo "done"
